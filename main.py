@@ -1,132 +1,113 @@
-import speech_recognition as srec
 import soundfile as sf
-from math import gcd
-from scipy.signal import resample_poly, butter, sosfiltfilt
+from scipy.signal import convolve
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-from skimage.restoration import denoise_wavelet, denoise_invariant, denoise_tv_chambolle, denoise_bilateral
+from skimage.restoration import cycle_spin
 import pywt
 
 
 SAMPLE_RATE = 44100
-SAMPLE_WIDTH = 2
-DTYPE = np.int16
-
-NAME_ORIGINAL_WAV = f"./Sounds/Sound_{SAMPLE_RATE}[Hz]_{SAMPLE_WIDTH}[byte].wav"
+NAME_ORIGINAL_WAV = "./Sounds/Sound_44100[Hz]_2[byte].wav"
 
 
-def wavelet_denoiser(signal, level, mode, wavelet):
+def wavelet_denoiser(signal, level=5, mode='hard', wavelet='db4'):
     coeffs = pywt.wavedec(signal, wavelet, level=level)
+
     sigma = np.median(np.abs(coeffs[-1])) / 0.6745
     threshold = sigma * np.sqrt(2 * np.log(signal.size))
 
     denoised_coeffs = [coeffs[0]] + [
-        pywt.threshold(c, threshold, mode=mode) for c in coeffs[1:]
+        pywt.threshold(c, threshold, mode=mode)
+        for c in coeffs[1:]
     ]
 
     denoised_signal = pywt.waverec(denoised_coeffs, wavelet)
+
     return denoised_signal[:len(signal)]
 
 
-def invarince_denoiser(image, **kwargs):
-    return denoise_wavelet(image, sigma=0.5, wavelet="db4", mode="soft")
+def gaussian_kernel(size, sigma):
+    x = np.linspace(-(size // 2), size // 2, size)
+    kernel = np.exp(-0.5 * (x / sigma) ** 2)
+    return kernel / kernel.sum()
 
 
-def save_graph(time, original, filtered, title, label, filename):
-    plt.figure(figsize=(10, 6))
-    plt.plot(time, original, label="Original Clean Signal")
-    plt.plot(time, filtered, linewidth=2, label=label)
-    plt.title(title)
-    plt.xlabel("Time")
-    plt.ylabel("Amplitude")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(filename)
-    plt.show()
-
-
-def sound_filter():
-    os.makedirs("./Sounds", exist_ok=True)
-
+def wavelet_shifted_filter():
     data, fs_original = sf.read(NAME_ORIGINAL_WAV)
 
     if len(data.shape) > 1:
         data = data[:, 0]
 
     time = np.arange(len(data)) / fs_original
-    data_2d = data.reshape(1, -1)
 
-    invariance = denoise_invariant(
-        data_2d,
-        denoise_function=invarince_denoiser
-    ).flatten()
+    max_shifts = [0, 1, 3, 5]
+    signals = []
 
-    total_variation = denoise_tv_chambolle(
-        data_2d,
-        weight=0.1,
-        channel_axis=None
-    ).flatten()
+    for n, s in enumerate(max_shifts):
+        sig_filtered = cycle_spin(
+            data,
+            func=wavelet_denoiser,
+            max_shifts=s,
+            shift_steps=5
+        )
 
-    bilateral = denoise_bilateral(
-        data_2d,
-        sigma_color=0.05,
-        sigma_spatial=15,
-        channel_axis=None
-    ).flatten()
+        sf.write(
+            f"./Sounds/Filtered_Shifted_Wavelet_{n}.wav",
+            sig_filtered,
+            SAMPLE_RATE
+        )
 
-    wavelet = wavelet_denoiser(
+        signals.append(sig_filtered)
+
+    kernel = gaussian_kernel(size=11, sigma=2)
+
+    filtered_signal = convolve(
         data,
-        level=5,
-        mode="soft",
-        wavelet="db4"
+        kernel,
+        mode="same"
     )
 
-    sf.write("./Sounds/Filtered_Invariance.wav", invariance, SAMPLE_RATE)
-    sf.write("./Sounds/Filtered_Total_Variation.wav", total_variation, SAMPLE_RATE)
-    sf.write("./Sounds/Filtered_Bilateral.wav", bilateral, SAMPLE_RATE)
-    sf.write("./Sounds/Filtered_Wavelet.wav", wavelet, SAMPLE_RATE)
-
-    save_graph(
-        time,
-        data,
-        invariance,
-        "J-Invariance",
-        "J-Invariance",
-        "./Sounds/Graph_Invariance.png"
+    sf.write(
+        "./Sounds/Filtered_Gaussian_Filter.wav",
+        filtered_signal,
+        SAMPLE_RATE
     )
 
-    save_graph(
-        time,
-        data,
-        total_variation,
-        "Total Variation",
-        "Total Variation",
-        "./Sounds/Graph_Total_Variation.png"
-    )
+    plt.figure(figsize=(12, 6))
 
-    save_graph(
-        time,
-        data,
-        bilateral,
-        "Bilateral",
-        "Bilateral",
-        "./Sounds/Graph_Bilateral.png"
-    )
+    plt.plot(time, data, label="Оригінал")
+    plt.plot(time, signals[0], label="Wavelet Shifted: no shift")
+    plt.plot(time, signals[1], label="Wavelet Shifted: 1x2")
+    plt.plot(time, signals[2], label="Wavelet Shifted: 1x4")
+    plt.plot(time, signals[3], label="Wavelet Shifted: 1x6")
 
-    save_graph(
-        time,
-        data,
-        wavelet,
-        "Wavelet",
-        "Wavelet",
-        "./Sounds/Graph_Wavelet.png"
-    )
+    plt.title("Порівняння сигналів у часовій області, вейвлет-фільтр")
+    plt.xlabel("Час")
+    plt.ylabel("Амплітуда")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
 
-    print("Практична робота 3 виконана")
-    print("Файли фільтрації та графіки збережено у папку Sounds")
+    plt.savefig("./Sounds/Graph_Shifted_Wavelet.png")
+    plt.show()
+
+    plt.figure(figsize=(12, 6))
+
+    plt.plot(time, data, label="Оригінал")
+    plt.plot(time, filtered_signal, label="Gaussian Filter")
+
+    plt.title("Порівняння сигналів у часовій області, фільтр Гаусса")
+    plt.xlabel("Час")
+    plt.ylabel("Амплітуда")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+
+    plt.savefig("./Sounds/Graph_Gaussian_Filter.png")
+    plt.show()
+
+    print("Практична робота 4 виконана")
 
 
 if __name__ == "__main__":
-    sound_filter()
+    wavelet_shifted_filter()
